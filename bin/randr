@@ -173,14 +173,6 @@ class FakeAsyncResqueRedis //extends Resque_Redis
 	
 }
 
-class Randr_Job extends Resque_Job
-{
-	public static function reserve($payload)
-	{
-		throw new Exception('Unsupported');
-	}
-}
-
 class Context extends ArrayObject
 {
 	public function __construct($props)
@@ -193,244 +185,6 @@ class Context extends ArrayObject
 		if (isset($this->$func))
 		{
 			return call_user_func_array($this->$func, $args);
-		}
-	}
-}
-
-class RandrWorkerPool
-{
-	private static $workers = [];
-	private static $pool = [];
-	private static $initialized = false;
-	private static $sockets = [];
-	
-	
-	public static function run($job)
-	{
-		if (!self::$initialized)
-		{
-			global $loop;
-			
-			$pcntl = new MKraemer\ReactPCNTL\PCNTL($loop);
-			$pcntl->on(SIGCHLD, function() {
-				
-				$pid = pcntl_wait($status);
-				
-				if (isset(self::$workers[$pid]))
-				{
-					$worker = self::$workers[$pid];
-					
-					$worker->emit('exit', [pcntl_wexitstatus($status)]);
-					if (pcntl_wexitstatus($status) || $worker->permanent)
-					{
-						self::$workers[$pid]->emit('fail');
-					}
-					
-					unset(self::$workers[$pid]);
-				}
-				else
-				{
-					print "UNKNOWN CHILD = ".$pid."\n";
-				}
-			});
-			
-			self::$initialized = true;
-		}
-		
-		if (count(self::$pool) > 0)
-		{
-			$worker = array_pop(self::$pool);
-			self::$workers[$worker->pid] = $worker;
-		}
-		else
-		{
-			print "NEW WORKER\n";
-			$worker = new RandrWorker;
-			$worker->on('forked', function($pid) use ($worker) {
-				self::$workers[$pid] = $worker;
-			});
-		}
-		
-		$worker->run($job);
-		return $worker;
-	}
-	
-	public static function initialize($loop, $queues = null)
-	{
-		if (self::$initialized)
-		{
-			die("Previously Iniatialized");
-		}
-		
-		
-		$pcntl = new MKraemer\ReactPCNTL\PCNTL($loop);
-		$pcntl->on(SIGCHLD, function() {
-			
-			$pid = pcntl_wait($status);
-			
-			if (isset(self::$workers[$pid]))
-			{
-				$worker = self::$workers[$pid];
-				$worker->emit('exit', [pcntl_wexitstatus($status)]);
-				
-				
-				if ($worker->permanent)
-				{
-					print "PERMANENT DIED\n";
-					$worker->emit('fail');
-					//self::$pool[] = $worker;
-				}
-				else
-				{
-					delete($worker);
-				}
-				
-				unset(self::$workers[$pid]);
-			}
-			else
-			{
-				print "UNKNOWN CHILD = ".$pid."\n";
-			}
-		});
-		
-		
-		self::$sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
-		stream_set_blocking(self::$sockets[0], 0);
-		stream_set_blocking(self::$sockets[0], 1);
-		
-		
-		$loop->addReadStream(self::$sockets[0], function() {
-			
-			do {
-				$buf = fread(self::$sockets[0], 8192);
-				if (!$buf)
-				{
-					break;
-				}
-				
-				for ($off = 0; $off < strlen($buf); $off += 8)
-				{
-					$info = unpack("lpid/lstatus", substr($buf, $off, 8));
-					
-					$worker = self::$workers[$info['pid']];
-					$worker->emit('exit', [$info['status']]);
-					
-					unset(self::$workers[$info['pid']]);
-					self::$pool[] = $worker;
-				}
-				
-				if (strlen($buf) < 8192)
-				{
-					break;
-				}
-			} while (1);
-			
-		});
-		
-		$workernum = $queues
-			->map(function($queue) {
-				return $queue->workers->max;
-			})
-			->reduce(function($res, $item) {
-				if ($res < $item) {
-					$res = $item;
-				}
-				return $res;
-			}, 0);
-		
-		$workernum *= 1.5;
-		$workerum = round($workernum);
-		
-		for ($i = 0; $i < $workernum; $i++)
-		{
-			self::$pool[] = new RandrWorker(true);
-		}
-		
-		self::$initialized = true;
-	}
-	
-	public static function exitPooled($pid, $status)
-	{
-		fputs(self::$sockets[1], pack("ll", $pid, $status));
-	}
-}
-
-class RandrWorker extends Evenement\EventEmitter
-{
-	public $permanent = false;
-	public $pid;
-	private $sockets = [];
-	
-	
-	public function __construct($permanent = false)
-	{
-		$this->permanent = (bool)$permanent;
-		if ($this->permanent)
-		{
-			global $loop;
-			
-			
-			socket_create_pair(AF_UNIX, SOCK_STREAM, 0, $this->sockets);
-			
-			
-			$pid = pcntl_fork();
-			switch($pid) {
-				case 0:
-					while(true)
-					{
-						$loop = React\EventLoop\Factory::create();
-						$pcntl = new MKraemer\ReactPCNTL\PCNTL($loop);
-						$pcntl->on(SIGUSR1, function() {
-							$buf = unpack(
-								"llen",
-								socket_read($this->sockets[1], 4, PHP_BINARY_READ)
-							);
-							
-							$job = unserialize(socket_read($this->sockets[1], $buf['len'], PHP_BINARY_READ));
-							$job->perform();
-							RandrWorkerPool::exitPooled(getmypid(), 0);
-						});
-						
-						$loop->run();
-					}
-					break;
-				case -1:
-					$this->emit('error');
-					break;
-				default:
-					$this->pid = $pid;
-					$this->emit('forked', [$pid]);
-					break;
-			}
-		}
-	}
-	
-	public function run($job)
-	{
-		if ($this->permanent)
-		{
-			$serialized = serialize($job);
-			socket_write($this->sockets[0], pack("l", strlen($serialized)) . $serialized);
-			posix_kill($this->pid, SIGUSR1);
-			
-			
-			return;
-		}
-		
-		$pid = pcntl_fork();
-		
-		
-		switch($pid) {
-			case 0:
-				$job->perform();
-				exit(0);
-				break;
-			case -1:
-				$this->emit('error');
-				break;
-			default:
-				$this->emit('forked', [$pid]);
-				break;
 		}
 	}
 }
@@ -482,8 +236,7 @@ $factory->createClient()
 			'worker'	=> null
 		]);
 		
-		
-		RandrWorkerPool::initialize($loop, $context->queues);
+		$wp = new Randr\Worker\Pool($loop, $context->queues);
 		
 		$context->worker = new Resque_Worker($context->queues->lists('name'));
 		$context->worker->registerWorker();
@@ -499,7 +252,7 @@ $factory->createClient()
 		$pcntl->on(SIGHUP, $listQueues);
 		
 		
-		$context->process = function() use ($context, $loop)
+		$context->process = function() use ($context, $loop, $wp)
 		{
 			$args = $context->queues
 				->filter(function($queue) {
@@ -520,7 +273,7 @@ $factory->createClient()
 			
 			$promise = call_user_func_array([$context->client, 'blpop'], $args);
 			
-			$promise->then(function($resp) use ($context) {
+			$promise->then(function($resp) use ($context, $wp) {
 				try
 				{
 					if ($resp)
@@ -534,8 +287,8 @@ $factory->createClient()
 							})
 							->first();
 						
-						$job = new Randr_Job($queue->name, json_decode($payload, true));
-						$child = RandrWorkerPool::run($job);
+						$job = new Randr\Job($queue->name, json_decode($payload, true));
+						$child = $wp->run($job);
 						
 						$child->once('exit', function() use ($queue) {
 							$queue->workers->cur--;
@@ -557,9 +310,6 @@ $factory->createClient()
 				$context->process();
 			});
 		};
-		
-		
-		//$loop->addPeriodicTimer(15, $listQueues);
 		
 		$context->process();
 	});
