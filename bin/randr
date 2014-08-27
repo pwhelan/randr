@@ -1,0 +1,576 @@
+#!/usr/bin/env php
+<?php
+
+/*
+$APP_INCLUDE = getenv('APP_INCLUDE');
+$QUEUE = getenv('QUEUE');
+
+$REDIS_BACKEND = getenv('REDIS_BACKEND');
+$REDIS_DATABASE = getenv('REDIS_DATABASE');
+$REDIS_NAMESPACE = getenv('REDIS_NAMESPACE');
+
+$logLevel = Resque_Worker::LOG_NONE;
+$LOGGING = getenv('LOGGING');
+$VERBOSE = getenv('VERBOSE');
+$VVERBOSE = getenv('VVERBOSE');
+if (!empty($LOGGING) || !empty($VERBOSE)) {
+	$logLevel = Resque_Worker::LOG_NORMAL;
+} elseif (!empty($VVERBOSE)) {
+	$logLevel = Resque_Worker::LOG_VERBOSE;
+}
+
+$interval = 5;
+$INTERVAL = getenv('INTERVAL');
+if (!empty($INTERVAL)) {
+	$interval = $INTERVAL;
+}
+
+$count = 1;
+$COUNT = getenv('COUNT');
+if (!empty($COUNT) && $COUNT > 1) {
+	$count = $COUNT;
+}
+
+startWorker($QUEUE, $logLevel, $logger, $interval);
+
+function startWorker($QUEUE, $logLevel, $logger, $interval)
+{
+	$queues = explode(',', $QUEUE);
+	$worker = new Resque_Worker($queues);
+	$worker->registerLogger($logger);
+	$worker->logLevel = $logLevel;
+	$worker->work($interval);
+}
+*/
+use React\Promise;
+use React\Stream;
+
+use Clue\React\Redis\Client;
+use Clue\React\Redis\Factory;
+
+use Illuminate\Support\Collection;
+
+require_once __DIR__.'/../vendor/autoload.php';
+
+
+global $loop;
+
+$loop = React\EventLoop\Factory::create();
+$factory = new Factory($loop);
+
+$queues = ["foo[4]", "bar[2:15]"];
+
+
+class FakeAsyncResqueRedis //extends Resque_Redis
+{
+	private $client;
+	
+	/**
+	* Redis namespace
+	* @var string
+	*/
+	private static $defaultNamespace = 'resque:';
+	
+	/**
+	* @var array List of all commands in Redis that supply a key as their
+	*	first argument. Used to prefix keys with the Resque namespace.
+	*/
+	private $keyCommands = array(
+		'exists',
+		'del',
+		'type',
+		'keys',
+		'expire',
+		'ttl',
+		'move',
+		'set',
+		'get',
+		'getset',
+		'setnx',
+		'incr',
+		'incrby',
+		'decr',
+		'decrby',
+		'rpush',
+		'lpush',
+		'llen',
+		'lrange',
+		'ltrim',
+		'lindex',
+		'lset',
+		'lrem',
+		'lpop',
+		'rpop',
+		'sadd',
+		'srem',
+		'spop',
+		'scard',
+		'sismember',
+		'smembers',
+		'srandmember',
+		'zadd',
+		'zrem',
+		'zrange',
+		'zrevrange',
+		'zrangebyscore',
+		'zcard',
+		'zscore',
+		'zremrangebyscore',
+		'sort'
+	);
+	// sinterstore
+	// sunion
+	// sunionstore
+	// sdiff
+	// sdiffstore
+	// sinter
+	// smove
+	// rename
+	// rpoplpush
+	// mget
+	// msetnx
+	// mset
+	// renamenx
+	
+	/**
+	* Set Redis namespace (prefix) default: resque
+	* @param string $namespace
+	*/
+	public function prefix($namespace)
+	{
+		if (strpos($namespace, ':') === false) {
+			$namespace .= ':';
+		}
+		self::$defaultNamespace = $namespace;
+	}
+
+	/**
+	* Magic method to handle all function requests and prefix key based
+	* operations with the {self::$defaultNamespace} key prefix.
+	*
+	* @param string $name The name of the method called.
+	* @param array $args Array of supplied arguments to the method.
+	* @return mixed Return value from Resident::call() based on the command.
+	*/
+	public function __call($name, $args)
+	{
+		$args = func_get_args();
+		if(in_array($name, $this->keyCommands)) {
+			$args[1][0] = self::$defaultNamespace . $args[1][0];
+		}
+		try {
+			return call_user_func_array([$this->client, $name], $args[1]);
+		}
+		catch(Exception $e) {
+			return false;
+		}
+	}
+	
+	public function __construct(Client $client)
+	{
+		$this->client = $client;
+	}
+	
+}
+
+class Randr_Job extends Resque_Job
+{
+	public static function reserve($payload)
+	{
+		throw new Exception('Unsupported');
+	}
+}
+
+class Context extends ArrayObject
+{
+	public function __construct($props)
+	{
+		parent::__construct($props, ArrayObject::ARRAY_AS_PROPS);
+	}
+	
+	public function __call($func, $args)
+	{
+		if (isset($this->$func))
+		{
+			return call_user_func_array($this->$func, $args);
+		}
+	}
+}
+
+class RandrWorkerPool
+{
+	private static $workers = [];
+	private static $pool = [];
+	private static $initialized = false;
+	private static $sockets = [];
+	
+	
+	public static function run($job)
+	{
+		if (!self::$initialized)
+		{
+			global $loop;
+			
+			$pcntl = new MKraemer\ReactPCNTL\PCNTL($loop);
+			$pcntl->on(SIGCHLD, function() {
+				
+				$pid = pcntl_wait($status);
+				
+				if (isset(self::$workers[$pid]))
+				{
+					$worker = self::$workers[$pid];
+					
+					$worker->emit('exit', [pcntl_wexitstatus($status)]);
+					if (pcntl_wexitstatus($status) || $worker->permanent)
+					{
+						self::$workers[$pid]->emit('fail');
+					}
+					
+					unset(self::$workers[$pid]);
+				}
+				else
+				{
+					print "UNKNOWN CHILD = ".$pid."\n";
+				}
+			});
+			
+			self::$initialized = true;
+		}
+		
+		if (count(self::$pool) > 0)
+		{
+			$worker = array_pop(self::$pool);
+			self::$workers[$worker->pid] = $worker;
+		}
+		else
+		{
+			print "NEW WORKER\n";
+			$worker = new RandrWorker;
+			$worker->on('forked', function($pid) use ($worker) {
+				self::$workers[$pid] = $worker;
+			});
+		}
+		
+		$worker->run($job);
+		return $worker;
+	}
+	
+	public static function initialize($loop, $queues = null)
+	{
+		if (self::$initialized)
+		{
+			die("Previously Iniatialized");
+		}
+		
+		
+		$pcntl = new MKraemer\ReactPCNTL\PCNTL($loop);
+		$pcntl->on(SIGCHLD, function() {
+			
+			$pid = pcntl_wait($status);
+			
+			if (isset(self::$workers[$pid]))
+			{
+				$worker = self::$workers[$pid];
+				$worker->emit('exit', [pcntl_wexitstatus($status)]);
+				
+				
+				if ($worker->permanent)
+				{
+					print "PERMANENT DIED\n";
+					$worker->emit('fail');
+					//self::$pool[] = $worker;
+				}
+				else
+				{
+					delete($worker);
+				}
+				
+				unset(self::$workers[$pid]);
+			}
+			else
+			{
+				print "UNKNOWN CHILD = ".$pid."\n";
+			}
+		});
+		
+		
+		self::$sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+		stream_set_blocking(self::$sockets[0], 0);
+		stream_set_blocking(self::$sockets[0], 1);
+		
+		
+		$loop->addReadStream(self::$sockets[0], function() {
+			
+			do {
+				$buf = fread(self::$sockets[0], 8192);
+				if (!$buf)
+				{
+					break;
+				}
+				
+				for ($off = 0; $off < strlen($buf); $off += 8)
+				{
+					$info = unpack("lpid/lstatus", substr($buf, $off, 8));
+					
+					$worker = self::$workers[$info['pid']];
+					$worker->emit('exit', [$info['status']]);
+					
+					unset(self::$workers[$info['pid']]);
+					self::$pool[] = $worker;
+				}
+				
+				if (strlen($buf) < 8192)
+				{
+					break;
+				}
+			} while (1);
+			
+		});
+		
+		$workernum = $queues
+			->map(function($queue) {
+				return $queue->workers->max;
+			})
+			->reduce(function($res, $item) {
+				if ($res < $item) {
+					$res = $item;
+				}
+				return $res;
+			}, 0);
+		
+		$workernum *= 1.5;
+		$workerum = round($workernum);
+		
+		for ($i = 0; $i < $workernum; $i++)
+		{
+			self::$pool[] = new RandrWorker(true);
+		}
+		
+		self::$initialized = true;
+	}
+	
+	public static function exitPooled($pid, $status)
+	{
+		fputs(self::$sockets[1], pack("ll", $pid, $status));
+	}
+}
+
+class RandrWorker extends Evenement\EventEmitter
+{
+	public $permanent = false;
+	public $pid;
+	private $sockets = [];
+	
+	
+	public function __construct($permanent = false)
+	{
+		$this->permanent = (bool)$permanent;
+		if ($this->permanent)
+		{
+			global $loop;
+			
+			
+			socket_create_pair(AF_UNIX, SOCK_STREAM, 0, $this->sockets);
+			
+			
+			$pid = pcntl_fork();
+			switch($pid) {
+				case 0:
+					while(true)
+					{
+						$loop = React\EventLoop\Factory::create();
+						$pcntl = new MKraemer\ReactPCNTL\PCNTL($loop);
+						$pcntl->on(SIGUSR1, function() {
+							$buf = unpack(
+								"llen",
+								socket_read($this->sockets[1], 4, PHP_BINARY_READ)
+							);
+							
+							$job = unserialize(socket_read($this->sockets[1], $buf['len'], PHP_BINARY_READ));
+							$job->perform();
+							RandrWorkerPool::exitPooled(getmypid(), 0);
+						});
+						
+						$loop->run();
+					}
+					break;
+				case -1:
+					$this->emit('error');
+					break;
+				default:
+					$this->pid = $pid;
+					$this->emit('forked', [$pid]);
+					break;
+			}
+		}
+	}
+	
+	public function run($job)
+	{
+		if ($this->permanent)
+		{
+			$serialized = serialize($job);
+			socket_write($this->sockets[0], pack("l", strlen($serialized)) . $serialized);
+			posix_kill($this->pid, SIGUSR1);
+			
+			
+			return;
+		}
+		
+		$pid = pcntl_fork();
+		
+		
+		switch($pid) {
+			case 0:
+				$job->perform();
+				exit(0);
+				break;
+			case -1:
+				$this->emit('error');
+				break;
+			default:
+				$this->emit('forked', [$pid]);
+				break;
+		}
+	}
+}
+
+$factory->createClient()
+	->then(function (Client $client) {
+		$deferred = new Promise\Deferred;
+		
+		$client->select(0)
+			->then(function() use ($deferred, $client) {
+				$deferred->resolve($client);
+			});
+		
+		return $deferred->promise();
+	})
+	->then(function (Client $client) use ($loop, $queues) {
+		
+		Resque::$redis = new FakeAsyncResqueRedis($client);
+		Resque::$pid = getmypid();
+		
+		$context = new Context([
+			'process'	=> null,
+			'client'	=> $client,
+			'queues'	=> Collection::make(array_map(
+				function($queue) {
+					
+					$m = preg_match("/([a-zA-Z]+)(?:\\[(\\d+)(?:|\\:\\d+))\\]/u", $queue, $matches);
+					if (!$m) {
+						die("Bad Queue: ".$queue);
+					}
+					
+					$name		= $matches[1];
+					$workers	= count($matches) >= 3 ? $matches[2] : 1;
+					$intval		= count($matches) >= 4 ? $matches[3] : 0;
+					
+					return (object)[
+						'name'		=> $name,
+						'interval'	=> $intval,
+						'workers'	=> (object)[
+							'max'	=> $workers,
+							'cur'	=> 0,
+							'total'	=> 0,
+							'failed'=> 0
+						]
+					];
+				},
+				is_array($queues) ? $queues : explode(',', $queues)
+			)),
+			'worker'	=> null
+		]);
+		
+		
+		RandrWorkerPool::initialize($loop, $context->queues);
+		
+		$context->worker = new Resque_Worker($context->queues->lists('name'));
+		$context->worker->registerWorker();
+		
+		$listQueues = function() use ($context) {
+			print "QUEUES:\n";
+			foreach ($context->queues->toArray() as $q) {
+				print "\t[ ] {$q->name} {$q->workers->cur} => {$q->workers->max} [{$q->workers->total}]\n";
+			}
+		};
+		
+		$pcntl = new MKraemer\ReactPCNTL\PCNTL($loop);
+		$pcntl->on(SIGHUP, $listQueues);
+		
+		
+		$context->process = function() use ($context, $loop)
+		{
+			$args = $context->queues
+				->filter(function($queue) {
+					return $queue->workers->cur < $queue->workers->max;
+				})
+				->lists('name');
+			
+			if (count($args) <= 0)
+			{
+				$loop->addTimer(1, function() use ($context) {
+					$context->process();
+				});
+				return;
+			}
+			
+			$args[] = 5;
+			
+			
+			$promise = call_user_func_array([$context->client, 'blpop'], $args);
+			
+			$promise->then(function($resp) use ($context) {
+				try
+				{
+					if ($resp)
+					{
+						list($qname, $payload) = $resp;
+						
+						
+						$queue = $context->queues
+							->filter(function($queue) use ($qname) {
+								return $queue->name == $qname;
+							})
+							->first();
+						
+						$job = new Randr_Job($queue->name, json_decode($payload, true));
+						$child = RandrWorkerPool::run($job);
+						
+						$child->once('exit', function() use ($queue) {
+							$queue->workers->cur--;
+						});
+						
+						$child->once('fail', function() use ($queue) {
+							$queue->workers->failed++;
+						});
+						
+						$queue->workers->total++;
+						$queue->workers->cur++;
+					}
+				}
+				catch (Exception $e)
+				{
+					
+				}
+				
+				$context->process();
+			});
+		};
+		
+		
+		//$loop->addPeriodicTimer(15, $listQueues);
+		
+		$context->process();
+	});
+
+class TestWorker
+{
+	public function perform()
+	{
+		print "TESTING IN ".getmypid()." .....\n";
+		print "TEST IS SUCCESFUL FOR {$this->queue}\n";
+	}
+}
+
+$loop->run();
