@@ -46,7 +46,7 @@ class Pool
 	{
 		if (count($this->pool) > 0)
 		{
-			$worker = array_pop($this->pool);
+			$worker = array_shift($this->pool);
 			$this->workers[$worker->pid] = $worker;
 		}
 		else
