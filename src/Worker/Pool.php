@@ -107,7 +107,7 @@ class Pool
 		$this->sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
 		
 		stream_set_blocking($this->sockets[0], 0);
-		stream_set_blocking($this->sockets[0], 1);
+		stream_set_blocking($this->sockets[1], 0);
 		
 		
 		$loop->addReadStream($this->sockets[0], function() {
