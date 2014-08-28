@@ -34,6 +34,11 @@ class Pool
 	 */
 	private $loop;
 	
+	/**
+	 * Default TTL for workers.
+	 */
+	private $worker_ttl = -1;
+	
 	
 	public function run($job)
 	{
@@ -54,9 +59,10 @@ class Pool
 		return $worker;
 	}
 	
-	public function __construct($loop, $queues = null)
+	public function __construct($loop, $queues = null, $worker_ttl = -1)
 	{
 		$this->loop = $loop;
+		$this->worker_ttl = $worker_ttl;
 		
 		
 		$pcntl = new \MKraemer\ReactPCNTL\PCNTL($loop);
@@ -81,6 +87,20 @@ class Pool
 				
 				unset($this->workers[$pid]);
 			}
+			else
+			{
+				for ($i = 0; $i < count($this->pool) ; $i++)
+				{
+					if ($this->pool[$i]->pid == $pid)
+					{
+						array_splice($this->pool, $i, 1);
+						$this->NewWorkerUnit();
+						
+						break;
+					}
+				}
+			}
+		});
 		});
 		
 		
@@ -103,8 +123,14 @@ class Pool
 				{
 					$info = unpack("lpid/lstatus", substr($buf, $off, 8));
 					
+					
 					$worker = $this->workers[$info['pid']];
 					$worker->emit('exit', [$info['status']]);
+					
+					if ($worker->ttl > 0)
+					{
+						$worker->ttl--;
+					}
 					
 					unset($this->workers[$info['pid']]);
 					$this->pool[] = $worker;
@@ -130,17 +156,24 @@ class Pool
 				}, 0);
 			
 			$workernum *= 1.5;
-			$workerum = round($workernum);
+			$workernum = round($workernum);
 			
 			for ($i = 0; $i < $workernum; $i++)
 			{
-				$worker = new Unit($loop, true);
+				$this->NewWorkerUnit();
+			}
+		}
+	}
+	
+	private function NewWorkerUnit()
+	{
+		$this->pool[] = new Unit(true, [
+			'onFork'=> function($worker) {
 				$worker->on('finish', function($status) {
 					fputs($this->sockets[1], pack("ll", getmypid(), $status));
 				});
-				
-				$this->pool[] = $worker;
-			}
-		}
+			},
+			'ttl'	=> $this->worker_ttl
+		]);
 	}
 }
