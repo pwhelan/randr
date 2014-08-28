@@ -1,7 +1,19 @@
 #!/usr/bin/env php
 <?php
 
-/*
+use React\Promise;
+use React\Stream;
+use React\EventLoop;
+
+use Clue\React\Redis;
+
+use Illuminate\Support\Collection;
+
+use Randr\ProcessContext as Context;
+
+require_once __DIR__.'/../vendor/autoload.php';
+
+
 $APP_INCLUDE = getenv('APP_INCLUDE');
 $QUEUE = getenv('QUEUE');
 
@@ -25,40 +37,25 @@ if (!empty($INTERVAL)) {
 	$interval = $INTERVAL;
 }
 
-$count = 1;
-$COUNT = getenv('COUNT');
-if (!empty($COUNT) && $COUNT > 1) {
-	$count = $COUNT;
+$ttl = -1;
+$TTL = getenv('TTL');
+if (!empty($TTL)) {
+	$ttl = $TTL;
 }
 
-startWorker($QUEUE, $logLevel, $logger, $interval);
+$options = (object)[
+	'redis'	=> [
+		'backend'	=> $REDIS_BACKEND ? $REDIS_BACKEND : '127.0.0.1:6379',
+		'namespace'	=> $REDIS_NAMESPACE ? $REDIS_NAMESPACE : 'resque',
+		'database'	=> $REDIS_DATABASE ? $REDIS_DATABASE : 0
+	],
+	'queues' => $QUEUE,
+	'interval' => $interval,
+	'ttl' => $ttl
+];
 
-function startWorker($QUEUE, $logLevel, $logger, $interval)
-{
-	$queues = explode(',', $QUEUE);
-	$worker = new Resque_Worker($queues);
-	$worker->registerLogger($logger);
-	$worker->logLevel = $logLevel;
-	$worker->work($interval);
-}
-*/
-use React\Promise;
-use React\Stream;
-
-use Clue\React\Redis\Client;
-use Clue\React\Redis\Factory;
-
-use Illuminate\Support\Collection;
-
-require_once __DIR__.'/../vendor/autoload.php';
-
-
-global $loop;
-
-$loop = React\EventLoop\Factory::create();
-$factory = new Factory($loop);
-
-$queues = ["foo[4]", "bar[2:15]"];
+$loop = EventLoop\Factory::create();
+$redis = new Redis\Factory($loop);
 
 
 class FakeAsyncResqueRedis //extends Resque_Redis
@@ -143,7 +140,7 @@ class FakeAsyncResqueRedis //extends Resque_Redis
 		}
 		self::$defaultNamespace = $namespace;
 	}
-
+	
 	/**
 	* Magic method to handle all function requests and prefix key based
 	* operations with the {self::$defaultNamespace} key prefix.
@@ -166,52 +163,51 @@ class FakeAsyncResqueRedis //extends Resque_Redis
 		}
 	}
 	
-	public function __construct(Client $client)
+	public function __construct(Redis\Client $client)
 	{
 		$this->client = $client;
 	}
 	
 }
 
-class Context extends ArrayObject
+class Randr_Resque extends Resque
 {
-	public function __construct($props)
+	public static function setRedisConnection(FakeAsyncResqueRedis $client)
 	{
-		parent::__construct($props, ArrayObject::ARRAY_AS_PROPS);
-	}
-	
-	public function __call($func, $args)
-	{
-		if (isset($this->$func))
-		{
-			return call_user_func_array($this->$func, $args);
-		}
+		self::$redis = $client;
+		self::$pid = getmypid();
 	}
 }
 
-$factory->createClient()
-	->then(function (Client $client) {
-		$deferred = new Promise\Deferred;
+if ($APP_INCLUDE)
+{
+	if (!file_exists($APP_INCLUDE))
+	{
+		print "Unable to find APP_INCLUDE: {$APP_INCLUDE}\n";
+		exit(1);
+	}
+	
+	include_once $APP_INCLUDE;
+}
+
+$redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redis['database'])
+	->then(function (Redis\Client $client) use ($loop, $options) {
 		
-		$client->select(0)
-			->then(function() use ($deferred, $client) {
-				$deferred->resolve($client);
-			});
+		// Setup fake Async redis connection for Resque.
+		// This of course only works with certain calls.
+		$redisresque = new FakeAsyncResqueRedis($client);
+		$redisresque->prefix($options->redis['namespace']);
+		Randr_Resque::setRedisConnection($redisresque);
 		
-		return $deferred->promise();
-	})
-	->then(function (Client $client) use ($loop, $queues) {
-		
-		Resque::$redis = new FakeAsyncResqueRedis($client);
-		Resque::$pid = getmypid();
 		
 		$context = new Context([
 			'process'	=> null,
 			'client'	=> $client,
+			'options'	=> $options,
 			'queues'	=> Collection::make(array_map(
 				function($queue) {
 					
-					$m = preg_match("/([a-zA-Z]+)(?:\\[(\\d+)(?:|\\:\\d+))\\]/u", $queue, $matches);
+					$m = preg_match("/([a-zA-Z]+)(?:\\[(\\d+)(?:|\\:\\d+)\\]|)/u", $queue, $matches);
 					if (!$m) {
 						die("Bad Queue: ".$queue);
 					}
@@ -231,28 +227,31 @@ $factory->createClient()
 						]
 					];
 				},
-				is_array($queues) ? $queues : explode(',', $queues)
+				is_array($options->queues) ? $options->queues : explode(',', $options->queues)
 			)),
 			'worker'	=> null
 		]);
 		
-		$wp = new Randr\Worker\Pool($loop, $context->queues);
+		$wp = new Randr\Worker\Pool($loop, $context->queues, $context->options->ttl);
 		
 		$context->worker = new Resque_Worker($context->queues->lists('name'));
 		$context->worker->registerWorker();
 		
+		
 		$listQueues = function() use ($context) {
 			print "QUEUES:\n";
 			foreach ($context->queues->toArray() as $q) {
-				print "\t[ ] {$q->name} {$q->workers->cur} => {$q->workers->max} [{$q->workers->total}]\n";
+				print "\t[ ] {$q->name} {$q->workers->cur} => ".
+					"{$q->workers->max} [{$q->workers->total}]\n";
 			}
 		};
+		
 		
 		$pcntl = new MKraemer\ReactPCNTL\PCNTL($loop);
 		$pcntl->on(SIGHUP, $listQueues);
 		
 		
-		$context->process = function() use ($context, $loop, $wp)
+		$context->process = function($context) use ($loop, $wp)
 		{
 			$args = $context->queues
 				->filter(function($queue) {
@@ -262,13 +261,13 @@ $factory->createClient()
 			
 			if (count($args) <= 0)
 			{
-				$loop->addTimer(1, function() use ($context) {
-					$context->process();
+				$loop->addTimer($context->options->interval, function() use ($context) {
+					$context->process($context);
 				});
 				return;
 			}
 			
-			$args[] = 5;
+			$args[] = $context->options->interval;
 			
 			
 			$promise = call_user_func_array([$context->client, 'blpop'], $args);
@@ -304,23 +303,15 @@ $factory->createClient()
 				}
 				catch (Exception $e)
 				{
-					
+					print "ERROR: ".$e->getMessage()."\n";
 				}
 				
-				$context->process();
+				$context->process($context);
 			});
 		};
 		
-		$context->process();
+		$context->process($context);
 	});
 
-class TestWorker
-{
-	public function perform()
-	{
-		print "TESTING IN ".getmypid()." .....\n";
-		print "TEST IS SUCCESFUL FOR {$this->queue}\n";
-	}
-}
-
+print "PID = ".getmypid()."\n";
 $loop->run();

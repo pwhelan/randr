@@ -154,7 +154,8 @@ class Pool
 			
 		});
 		
-		if ($queues)
+		
+		if ($queues && ($worker_ttl > 1 || $worker_ttl < 0))
 		{
 			// Count the maximum workers and add half.
 			// Good enough rule of thumb for now.
