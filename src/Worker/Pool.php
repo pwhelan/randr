@@ -2,6 +2,8 @@
 
 namespace Randr\Worker;
 
+use \MKraemer\ReactPCNTL;
+
 /**
  * Worker Pool.
  *
@@ -65,7 +67,7 @@ class Pool
 		$this->worker_ttl = $worker_ttl;
 		
 		
-		$pcntl = new \MKraemer\ReactPCNTL\PCNTL($loop);
+		$pcntl = new ReactPCNTL\PCNTL($loop);
 		$pcntl->on(SIGCHLD, function() {
 			
 			$pid = pcntl_wait($status);
@@ -101,6 +103,18 @@ class Pool
 				}
 			}
 		});
+		
+		
+		$pcntl->on(SIGUSR2, function() {
+			print "Workers:\n";
+			foreach ($this->pool as $worker)
+			{
+				print "[I] {$worker->pid} ttl={$worker->ttl}\n";
+			}
+			foreach ($this->workers as $worker)
+			{
+				print "[R] {$worker->pid} ttl={$worker->ttl}\n";
+			}
 		});
 		
 		
