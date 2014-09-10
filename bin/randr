@@ -31,6 +31,9 @@ if (!empty($LOGGING) || !empty($VERBOSE)) {
 	$logLevel = Resque_Worker::LOG_VERBOSE;
 }
 
+$LOG_HANDLER = getenv('LOGHANDLER');
+$LOG_HANDLER_TARGET = getenv('LOGHANDLERTARGET');
+
 $interval = 5;
 $INTERVAL = getenv('INTERVAL');
 if (!empty($INTERVAL)) {
@@ -51,8 +54,14 @@ $options = (object)[
 	],
 	'queues' => $QUEUE,
 	'interval' => $interval,
-	'ttl' => $ttl
+	'ttl' => $ttl,
+	'log' => [
+		'level'		=> $logLevel,
+		'handler'	=> $LOG_HANDLER ? $LOG_HANDLER : 'Stream',
+		'target'	=> $LOG_HANDLER_TARGET ? $LOG_HANDLER_TARGET : '-'
+	]
 ];
+
 
 $loop = EventLoop\Factory::create();
 $redis = new Redis\Factory($loop);
@@ -243,9 +252,47 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 			'worker'	=> null
 		]);
 		
+		
 		$wp = new Randr\Worker\Pool($loop, $context->queues, $context->options->ttl);
 		
-		$context->worker = new Resque_Worker($context->queues->lists('name'));
+		$wp->on('process', function($worker, $job) use ($context) {
+			$context->worker->log([
+				'message' => 'Processing ID:' . $job->payload['id'] .  ' in ' . $job->queue,
+				'data' => [
+					'type' => 'process',
+					'worker' => function_exists('gethostname') ?
+						gethostname() : php_uname('n') .
+						':' . getmypid(),
+					'job_id' => $job->payload['id']
+				]],
+				Resque_Worker::LOG_TYPE_INFO
+			);
+		});
+		
+		
+		$context->worker = new Resque_Worker(array_map(
+			function ($queue) {
+				$parts = explode(':', $queue);
+				return array_pop($parts);
+			},
+			$context->queues->lists('name')
+		));
+		
+		$logger = new MonologInit\MonologInit($options->log['handler'], $options->log['target']);
+		
+		$context->worker->registerLogger($logger);
+		
+		$context->worker->logLevel = $options->log['level'];
+		
+		
+		$context->worker->log([
+			'message' => 'Starting worker ' . $context->worker,
+			'data' => [
+				'type' => 'start',
+				'worker' => (string) $context->worker
+			]],
+			Resque_Worker::LOG_TYPE_INFO
+		);
 		$context->worker->registerWorker();
 		
 		
@@ -270,6 +317,18 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 				})
 				->lists('name');
 			
+			foreach ($args as $queue)
+			{
+				$context->worker->log([
+					'message' => 'Checking ' . $queue,
+					'data' => [
+						'type' => 'check',
+						'queue' => $queue
+					]],
+					Resque_Worker::LOG_TYPE_DEBUG
+				);
+			}
+			
 			if (count($args) <= 0)
 			{
 				$loop->addTimer($context->options->interval, function() use ($context) {
@@ -290,22 +349,56 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 					{
 						list($qname, $payload) = $resp;
 						
+						$context->worker->log([
+							'message' => 'Found job on ' . $qname,
+							'data' => [
+								'type' => 'found',
+								'queue' => $qname
+							]],
+							Resque_Worker::LOG_TYPE_DEBUG
+						);
+						
 						
 						$queue = $context->queues
-							->filter(function($queue) use ($qname) {
+							->filter(function($queue) use ($qname, $context) {
 								return $queue->name == $qname;
 							})
 							->first();
 						
+						if (empty($queue))
+						{
+							print "Unknown Queue: {$qname}\n";
+							return;
+						}
+						
 						$job = new Randr\Job($queue->name, json_decode($payload, true));
+						
+						$context->worker->log([
+							'message' => 'got ' . $job,
+							'data' => [
+								'type' => 'got',
+								'args' => $job
+							]],
+							Resque_Worker::LOG_TYPE_INFO
+						);
+						Resque_Event::trigger('beforeFork', $job);
+						$context->worker->workingOn($job);
+						
+						
 						$child = $wp->run($job);
 						
-						$child->once('exit', function() use ($queue) {
+						$child->once('exit', function() use ($queue, $context) {
 							$queue->workers->cur--;
+							$context->worker->doneWorking();
 						});
 						
-						$child->once('fail', function() use ($queue) {
+						$child->once('fail', function($status) use ($queue, $job) {
 							$queue->workers->failed++;
+							$job->fail(
+								new Resque_Job_DirtyExitException(
+									'Job exited with exit code ' . $status
+								)
+							);
 						});
 						
 						$queue->workers->total++;
