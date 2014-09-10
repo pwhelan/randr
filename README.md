@@ -1,6 +1,8 @@
 RandR
 ======
 
+[![Build Status](https://travis-ci.org/pwhelan/randr.svg?branch=master)](https://travis-ci.org/pwhelan/randr)
+
 RandR is a PHP Resque compatible server using React PHP. Currently it supports
 the logging extensions PHP Resque Ex does but in the future these should be 
 abstracted away by using Evenement.
