@@ -200,6 +200,16 @@ class Randr_Resque extends Resque
 }
 
 
+switch(pcntl_fork())
+{
+	case 0:
+		posix_setsid();
+		break;
+	default:
+		exit(0);
+}
+
+
 if ($APP_INCLUDE)
 {
 	if (!file_exists(__DIR__.'/../'.$APP_INCLUDE))
@@ -422,5 +432,8 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 		$context->process($context);
 	});
 
-print "PID = ".getmypid()."\n";
+print getmypid()."\n";
+
 $loop->run();
+
+// $context->worker->unregisterWorker();
