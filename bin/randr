@@ -216,7 +216,7 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 			'client'	=> $client,
 			'options'	=> $options,
 			'queues'	=> Collection::make(array_map(
-				function($queue) {
+				function($queue) use ($options) {
 					
 					$m = preg_match("/([a-zA-Z]+)(?:\\[(\\d+)(?:|\\:\\d+)\\]|)/u", $queue, $matches);
 					if (!$m) {
@@ -228,7 +228,7 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 					$intval		= count($matches) >= 4 ? $matches[3] : 0;
 					
 					return (object)[
-						'name'		=> $name,
+						'name'		=> $options->redis['namespace'].':queue:'.$name,
 						'interval'	=> $intval,
 						'workers'	=> (object)[
 							'max'	=> $workers,
