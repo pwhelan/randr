@@ -177,6 +177,17 @@ class Randr_Resque extends Resque
 		self::$redis = $client;
 		self::$pid = getmypid();
 	}
+	
+	/**
+	 * Get an array of all known queues.
+	 *
+	 * @return array Array of queues.
+	 */
+	public static function queues()
+	{
+		$queues = self::redis()->smembers('queues');
+		return $queues;
+	}
 }
 
 if ($APP_INCLUDE)
