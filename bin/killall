@@ -1,0 +1,6 @@
+#!/bin/bash
+
+RPID=`cat randr.pid`
+kill -- -$RPID
+
+rm randr.pid

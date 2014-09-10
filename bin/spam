@@ -1,0 +1,78 @@
+#!/usr/bin/env php
+<?php
+
+require_once __DIR__.'/../vendor/autoload.php';
+Resque::setBackend('127.0.0.1:6379', 0, 'resque');
+
+
+$queues = [];
+$statuses = [];
+
+foreach (Resque_Worker::all() as $worker)
+{
+	foreach ($worker->queues() as $queue)
+	{
+		if (!in_array($queue, $queues))
+		{
+			$queues[] = $queue;
+		}
+	}
+}
+
+$queues = array_map(
+	function ($queue) {
+		$parts = explode(':', $queue);
+		return array_pop($parts);
+	},
+	$queues
+);
+
+
+foreach ($queues as $queue)
+{
+	print "Queues Job on: $queue\n";
+	
+	for ($i = rand(512, 1024); $i--;)
+	{
+		$statuses[] = new Resque_Job_Status(
+			Resque_Job::create(
+				$queue, 
+				"TestWorker", 
+				[], 
+				true
+			)
+		);
+	}
+}
+
+
+$done = [];
+
+
+print "Running ".count($statuses)." jobs\n";
+
+while(count($statuses) > 0)
+{
+	$pending = [];
+	
+	foreach ($statuses as $idx => $status)
+	{
+		if ($status->get() == 2) {
+			$done[] = $status;
+		}
+		else if ($status->get() == 1) {
+			$pending[] = $status;
+		}
+	}
+	
+	if (count($pending) != count($statuses)) 
+	{
+		print "Pending: ".count($pending).
+			" Done: ".count($done)." / ".
+			(count($statuses) - count($pending))."\n";
+		
+		$statuses = $pending;
+	}
+	
+	if (count($pending) > 0) sleep(1);
+}
