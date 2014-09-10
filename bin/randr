@@ -199,15 +199,20 @@ class Randr_Resque extends Resque
 	}
 }
 
+
 if ($APP_INCLUDE)
 {
-	if (!file_exists($APP_INCLUDE))
+	if (!file_exists(__DIR__.'/../'.$APP_INCLUDE))
 	{
 		print "Unable to find APP_INCLUDE: {$APP_INCLUDE}\n";
 		exit(1);
 	}
 	
-	include_once $APP_INCLUDE;
+	include_once __DIR__.'/../'.$APP_INCLUDE;
+}
+else
+{
+	die("No APP_INCLUDE defined");
 }
 
 $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redis['database'])
