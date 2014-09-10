@@ -14,12 +14,17 @@ use \MKraemer\ReactPCNTL;
  *
  * @author Phillip Whelan <pwhelan@mixxx.org>
  */
-class Pool
+class Pool extends \Evenement\EventEmitter
 {
 	/**
 	 * A list of the current workers, indexed by process id.
 	 */
 	private $workers = [];
+	
+	/**
+	* A list of the current workers, indexed by process id.
+	*/
+	private $running = [];
 	
 	/**
 	 * A list of the unused pooled workers.
@@ -51,13 +56,16 @@ class Pool
 		}
 		else
 		{
+			$worker = new Unit();
 			$worker = new Unit($this->loop);
 			$worker->on('forked', function($pid) use ($worker) {
 				$this->workers[$pid] = $worker;
 			});
 		}
 		
+		$this->emit('process', [$worker, $job]);
 		$worker->run($job);
+		
 		return $worker;
 	}
 	
@@ -80,11 +88,11 @@ class Pool
 				// permanent workers should not die
 				if ($worker->permanent)
 				{
-					$worker->emit('fail');
+					$worker->emit('fail', [pcntl_wexitstatus($status)]);
 				}
 				else
 				{
-					delete($worker);
+					$worker->emit('done');
 				}
 				
 				unset($this->workers[$pid]);
@@ -120,26 +128,37 @@ class Pool
 		
 		$this->sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
 		
-		stream_set_blocking($this->sockets[0], 0);
-		stream_set_blocking($this->sockets[1], 0);
+		for ($i = 0; $i < 2; $i++)
+		{
+			stream_set_blocking($this->sockets[$i], 0);
+			//stream_set_chunk_size($this->sockets[$i], 512);
+			//if ($i == 0) stream_set_read_buffer($this->sockets[$i], 512);
+			//if ($i == 1) stream_set_write_buffer($this->sockets[$i], 512);
+		}
 		
-		
-		$loop->addReadStream($this->sockets[0], function() {
+		$loop->addReadStream($this->sockets[0], function($socket) {
 			
 			do {
-				$buf = fread($this->sockets[0], 8192);
+				$buf = stream_socket_recvfrom($socket, 512);
 				if (!$buf)
 				{
 					break;
 				}
 				
-				for ($off = 0; $off < strlen($buf); $off += 8)
+				if (strlen($buf) != 512)
 				{
-					$info = unpack("lpid/lstatus", substr($buf, $off, 8));
-					
-					
+					print "BAD NEWS\n";
+				}
+				
+				
+				$info = unpack("Npid/Nstatus", substr($buf, 0, 8));
+				
+				
+				if (isset($this->workers[$info['pid']]))
+				{
 					$worker = $this->workers[$info['pid']];
 					$worker->emit('exit', [$info['status']]);
+					
 					
 					if ($worker->ttl > 0)
 					{
@@ -149,9 +168,21 @@ class Pool
 					unset($this->workers[$info['pid']]);
 					$this->pool[] = $worker;
 				}
+				else
+				{
+					$workers = array_filter(
+						$this->pool,
+						function ($worker) use ($info) {
+							return $worker->pid == $info['pid'];
+						}
+					);
+					
+					if (count($workers) > 0) print "WORKER ALREADY IN POOL\n";
+					else print "NO SUCH WORKER\n";
+					//print_r($worker);
+				}
 				
-			} while ($buf && strlen($buf) >= 8192);
-			
+			} while (0); //$buf);
 		});
 		
 		
@@ -185,7 +216,17 @@ class Pool
 		$this->pool[] = new Unit(true, [
 			'onFork'=> function($worker) {
 				$worker->on('finish', function($status) {
-					fputs($this->sockets[1], pack("ll", getmypid(), $status));
+					$rc = stream_socket_sendto(
+						$this->sockets[1], 
+						pack("NN", getmypid(), $status) . 
+							str_repeat("A", 512 - 8)
+					);
+					fflush($this->sockets[1]);
+					
+					if ($rc != 512)
+					{
+						print "UH OH!\n";
+					}
 				});
 			},
 			'ttl'	=> $this->worker_ttl
