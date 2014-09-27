@@ -16,6 +16,7 @@ before_script:
 script:
     - "sh -c 'bin/randr' > randr.pid"
     - bin/spam
+    - bin/spam-delayed
 
 after_script:
    - bin/killall

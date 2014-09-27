@@ -1,0 +1,96 @@
+#!/usr/bin/env php
+<?php
+
+require_once __DIR__.'/../vendor/autoload.php';
+Resque::setBackend('127.0.0.1:6379', 0, 'resque');
+
+
+$queues = [];
+$statuses = [];
+
+foreach (Resque_Worker::all() as $worker)
+{
+	foreach ($worker->queues() as $queue)
+	{
+		if (!in_array($queue, $queues))
+		{
+			$queues[] = $queue;
+		}
+	}
+}
+
+$queues = array_map(
+	function ($queue) {
+		$parts = explode(':', $queue);
+		return array_pop($parts);
+	},
+	$queues
+);
+
+
+foreach ($queues as $queue)
+{
+	print "Queues Job on: $queue\n";
+	
+	for ($i = rand(512, 1024); $i--;)
+	{
+		$delay = mt_rand(0, 10);
+		
+		
+		$statuses[] = (object)[
+			'job' => new Resque_Job_Status(
+				ResqueScheduler\ResqueScheduler::enqueueIn(
+					$delay,
+					$queue,
+					"TestWorker",
+					[],
+					true
+				)
+			),
+			'start' => time(),
+			'delay' => $delay
+		];
+	}
+}
+
+
+$done = [];
+
+
+print "Running ".count($statuses)." jobs\n";
+
+$rc = 0;
+
+while(count($statuses) > 0)
+{
+	$pending = [];
+	
+	foreach ($statuses as $idx => $status)
+	{
+		$s = $status->job->get();
+		if ($s == 2) {
+			if (time() - $status->start < $status->delay)
+			{
+				print "ERROR: precocious job\n";
+				$rc = 1;
+			}
+			$done[] = $status;
+		}
+		else if ($s == 1 || $s == 63) {
+			$pending[] = $status;
+		}
+	}
+	
+	if (count($pending) != count($statuses))
+	{
+		print "Pending: ".count($pending).
+			" Done: ".count($done)." / ".
+			(count($statuses) - count($pending))."\n";
+		
+		$statuses = $pending;
+	}
+	
+	if (count($pending) > 0) sleep(1);
+}
+
+exit($rc);

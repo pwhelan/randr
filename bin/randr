@@ -293,12 +293,10 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 			$context->queues->lists('name')
 		));
 		
+		
 		$logger = new MonologInit\MonologInit($options->log['handler'], $options->log['target']);
-		
 		$context->worker->registerLogger($logger);
-		
 		$context->worker->logLevel = $options->log['level'];
-		
 		
 		$context->worker->log([
 			'message' => 'Starting worker ' . $context->worker,
@@ -324,6 +322,7 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 		$pcntl->on(SIGHUP, $listQueues);
 		
 		
+		// Start the normal queue
 		$context->process = function($context) use ($loop, $wp)
 		{
 			$args = $context->queues
@@ -430,6 +429,78 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 		};
 		
 		$context->process($context);
+		
+		
+		// Setup the Timer Queue
+		// TODO: assure that only one instance of the timer executes
+		// at a given time.
+		$loop->addPeriodicTimer(1, function() use ($context, $wp, $loop) {
+			
+			$schedq = $context->options->redis['namespace'].':_schdlr_';
+			
+			//"ZRANGEBYSCORE" "resque:_schdlr_" "-inf" "1411006438"
+			$context->client->ZRANGEBYSCORE(
+				$schedq,
+				'-inf',
+				time()
+			)->then(function($resp) use ($context, $wp, $loop, $schedq) {
+				
+				foreach ($resp as $time)
+				{
+					$loop->addTimer(
+						$time > time() ?
+							$time - time() : 0,
+						function() use ($context, $time, $schedq) {
+							
+							$context->client->llen($schedq.':'.$time)
+								->then(function($count) use ($context, $schedq, $time) {
+									
+									for ($i = 0; $i < $count; $i++)
+									{
+										$context->client->lpop($schedq.':'.$time)
+											->then(function($resp) use ($time) {
+												$jobdesc = json_decode($resp, true);
+												//print "SCHEDULED! = {$time} / {$resp}\n";
+												//print_r($jobdesc);
+												//print "\n";
+												
+												if (empty($jobdesc))
+												{
+													print "BAD JOB\n";
+													return;
+												}
+												/*
+												print "JOB ARGS = \n";
+												print_r(array_merge(
+													[$jobdesc['queue'], $jobdesc['class']],
+													$jobdesc['args'],
+													[$jobdesc['track']]
+												));
+												*/
+												call_user_func_array(
+													'\Resque::enqueue',
+													array_merge(
+														[$jobdesc['queue'], $jobdesc['class']],
+														$jobdesc['args'],
+														[$jobdesc['track']]
+													)
+												);
+											});
+									}
+								});
+						}
+					);
+					
+					
+					$context->client->ZREM(
+						$schedq,
+						'-inf',
+						$time
+					);
+				}
+			});
+			
+		});
 	});
 
 print getmypid()."\n";
