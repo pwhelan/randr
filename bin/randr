@@ -276,8 +276,14 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 			$context->queues->lists('name')
 		));
 		
+		require_once __DIR__.'/../src/Logging/MonologAsync.php';
+		$logger = new MonologInit\MonologInitAsync(
+			$loop,
+			$options->log['handler'],
+			$options->log['target']
+		);
 		
-		$logger = new MonologInit\MonologInit($options->log['handler'], $options->log['target']);
+		
 		$context->worker->registerLogger($logger);
 		$context->worker->logLevel = $options->log['level'];
 		$context->worker->registerWorker();
