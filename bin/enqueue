@@ -1,0 +1,8 @@
+#!/usr/bin/env php
+<?php
+
+require_once __DIR__.'/../vendor/autoload.php';
+
+// Required if redis is located elsewhere
+Resque::setBackend('127.0.0.1:6379');
+Resque::enqueue('foobar', 'TestWorker', ['i','love', 'this', 'job']);

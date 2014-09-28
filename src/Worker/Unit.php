@@ -14,11 +14,13 @@ class Unit extends \Evenement\EventEmitter
 	public $permanent = false;
 	public $pid;
 	public $ttl = -1;
+	public $job;
+	public $start;
 	private $sockets = [];
 	
 	private function perform($job)
 	{
-		// $startTime = microtime(true);
+		$success = false;
 		try {
 			if (!$job instanceof \Randr\Job)
 			{
@@ -27,7 +29,15 @@ class Unit extends \Evenement\EventEmitter
 			
 			\Resque_Event::trigger('afterFork', $job);
 			$rc = $job->perform();
-			//$this->log(array('message' => 'done ID:' . $job->payload['id'], 'data' => array('type' => 'done', 'job_id' => $job->payload['id'], 'time' => round(microtime(true) - $startTime, 3) * 1000)), self::LOG_TYPE_INFO)
+			//$this->log([
+			//	'message' => 'done ID:' . $job->payload['id'],
+			//	'data' => [
+			//		'type' => 'done',
+			//		'job_id' => $job->payload['id'],
+			//		'time' => round(microtime(true) - $startTime, 3) * 1000
+			//	]
+			//], self::LOG_TYPE_INFO)
+			$success = true;
 		}
 		catch (Exception $e)
 		{
@@ -49,7 +59,7 @@ class Unit extends \Evenement\EventEmitter
 			print "ERROR: ".$e->getMessage()."\n";
 		}
 		
-		$this->emit('finish', [$rc]);
+		$this->emit('finish', [$success]);
 		$job->updateStatus(\Resque_Job_Status::STATUS_COMPLETE);
 		
 		
@@ -189,6 +199,10 @@ class Unit extends \Evenement\EventEmitter
 	
 	public function run($job)
 	{
+		$this->job = $job;
+		$this->start = microtime(true);
+		
+		
 		if ($this->permanent)
 		{
 			$serialized = serialize($job);

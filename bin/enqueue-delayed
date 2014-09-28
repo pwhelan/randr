@@ -1,0 +1,13 @@
+#!/usr/bin/env php
+<?php
+
+require_once __DIR__.'/../vendor/autoload.php';
+
+// Required if redis is located elsewhere
+Resque::setBackend('localhost:6379');
+ResqueScheduler\ResqueScheduler::enqueueIn(
+	count($argv) <= 1 ? 10 : $argv[1],
+	'test',
+	'TestWorker',
+	['i','love', 'this', 'job']
+);
