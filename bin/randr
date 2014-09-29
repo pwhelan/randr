@@ -200,13 +200,22 @@ class Randr_Resque extends Resque
 }
 
 
-switch(pcntl_fork())
+$opts = getopt("f", ["foreground"]);
+
+if (array_key_exists("f", $opts) || array_key_exists("foreground", $opts))
 {
-	case 0:
-		posix_setsid();
-		break;
-	default:
-		exit(0);
+	posix_setsid();
+}
+else
+{
+	switch(pcntl_fork())
+	{
+		case 0:
+			posix_setsid();
+			break;
+		default:
+			exit(0);
+	}
 }
 
 
@@ -303,10 +312,14 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 		$pcntl->on(SIGTERM, function() use ($context, $wp) {
 			$context->worker->unregisterWorker();
 			unset($wp);
-			
 			exit(0);
 		});
 		
+		$pcntl->on(SIGINT, function() use ($context, $wp) {
+			$context->worker->unregisterWorker();
+			unset($wp);
+			exit(0);
+		});
 		
 		
 		// Start the normal queue
