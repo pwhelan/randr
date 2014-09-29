@@ -9,27 +9,18 @@ services: redis-server
 
 env:
     - APP_INCLUDE=tests/TestWorker.php QUEUE="foo[4],bar[4],test[4],foobar[4]"
+    # Use YAML file and test cron jobs
+    - CRON=1
 
 before_script:
     - composer install --no-interaction --dev
+    - if [[ "$CRON" == 1 ]]; then cp randr.yaml.example randr.yaml ; else rm -rf randr.yaml ; fi
 
 script:
     - "sh -c 'bin/randr' > randr.pid"
     - bin/spam
     - bin/spam-delayed
+    - if [[ "$CRON" == 1 ]]; then sleep 60; test -f cron.output; fi
 
 after_script:
    - bin/killall
-
-#notifications:
-#  email: false
-#  irc:
-#    channels:
-#      - "irc.freenode.org#phpunit"
-#    use_notice: true
-#  webhooks:
-#    urls:
-#      - https://webhooks.gitter.im/e/6668f52f3dd4e3f81960
-#    on_success: always
-#    on_failure: always
-#    on_start: false

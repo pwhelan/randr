@@ -16,9 +16,10 @@ class TestWorker
 	
 	public function perform()
 	{
-		$sleeps = [1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 4, 4, 5, 6, 7, 10];
-		//print "DOIN' IT\n";
-		//usleep($sleeps[rand(0, count($sleeps)-1)] * rand(100, 1000));
-		//print "DONE\n";
+		// Create touch file for cron job
+		if (count($this->args) > 0 && isset($this->args[0]))
+		{
+			file_put_contents(__DIR__.'/../cron.output', $this->args['time']);
+		}
 	}
 }
