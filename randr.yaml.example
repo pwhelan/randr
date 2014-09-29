@@ -28,7 +28,7 @@ cron:
       jobs:
           - when: @minutely
             arguments: jobOne
-          - when: "*/5"
+          - when: "*/5  * * * * *"
             arguments:
                 - jobTwo
                 - foobar
