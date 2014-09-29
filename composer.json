@@ -23,6 +23,8 @@
 		"illuminate/support": "4.*",
 		"evenement/evenement": "2.0.0",
 		"mkraemer/react-pcntl": "2.0.0"
+		"mkraemer/react-pcntl": "2.0.0",
+		"symfony/yaml": "2.5.*"
 	},
 	"autoload": {
 		"psr-4": {

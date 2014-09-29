@@ -1,0 +1,36 @@
+app_include: tests/TestWorker.php
+interval: 5
+
+log:
+  handler: Stream
+  target: error.log
+  level: verbose
+
+redis:
+  backend: 127.0.0.1:6379
+  namespace: resque
+  database: 0
+
+queues:
+    - name: foo
+      workers: 4
+    - name: bar
+      workers: 4
+    - name: test
+      workers: 4
+    - name: foobar
+      workers: 4
+      interval: 10
+
+cron:
+    - queue: test
+      worker: TestWorker
+      jobs:
+          - when: @minutely
+            arguments: jobOne
+          - when: "*/5"
+            arguments:
+                - jobTwo
+                - foobar
+          - when: @daily
+            arguments: jobThree

@@ -6,10 +6,10 @@ use React\Stream;
 use React\EventLoop;
 
 use Clue\React\Redis;
-
 use Illuminate\Support\Collection;
-
 use Randr\ProcessContext as Context;
+use Symfony\Component\Yaml\Yaml;
+
 
 require_once __DIR__.'/../vendor/autoload.php';
 
@@ -61,6 +61,89 @@ $options = (object)[
 		'target'	=> $LOG_HANDLER_TARGET ? $LOG_HANDLER_TARGET : '-'
 	]
 ];
+
+
+$config = Yaml::parse("randr.yaml");
+if (isset($config['app_include']))
+{
+	$APP_INCLUDE = $config['app_include'];
+}
+
+if (isset($config['log']))
+{
+	if (isset($config['log']['handler']))
+	{
+		$options->log['handler'] = $config['log']['handler'];
+		$options->log['target'] = isset($config['log']['target']) ?
+			$config['log']['target'] : null;
+		
+		if (isset($config['log']['level']))
+		{
+			switch(strtolower($config['log']['level']))
+			{
+				case 'none':
+					$options->log['level'] = Resque_Worker::LOG_NONE;
+					break;
+				case 'verbose':
+					$options->log['level'] = Resque_Worker::LOG_VERBOSE;
+					break;
+				case 'normal':
+					$options->log['level'] = Resque_Worker::LOG_NORMAL;
+					break;
+				default:
+					$options->log['level'] = $config['log']['level'];
+					break;
+			}
+		}
+	}
+}
+
+if (isset($config['redis']))
+{
+	if (isset($config['redis']['backend']))
+	{
+		$options->redis['backend'] = $config['redis']['backend'];
+	}
+	if (isset($config['redis']['namespace']))
+	{
+		$options->redis['namespace'] = $config['redis']['namespace'];
+	}
+	if (isset($config['redis']['database']))
+	{
+		$options->redis['database'] = $config['redis']['database'];
+	}
+}
+
+if (isset($config['queues']))
+{
+	$options->queues = implode(",", array_map(
+		function($queue) {
+			$ret = $queue['name'];
+			if (isset($queue['workers']) || isset($queue['interval']))
+			{
+				$ret .= '[' .
+					(isset($queue['workers']) ?
+						$queue['workers'] : 1
+					)
+					.
+					(isset($queue['interval']) ?
+						":" .$queue['interval'] :
+						''
+					)
+					.
+				']';
+				
+				return $ret;
+			}
+		},
+		$config['queues']
+	));
+}
+
+if (isset($config['interval']))
+{
+	$options->interval = $config['interval'];
+}
 
 
 $loop = EventLoop\Factory::create();
