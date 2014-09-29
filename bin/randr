@@ -139,9 +139,9 @@ class FakeAsyncResqueRedis //extends Resque_Redis
 	// renamenx
 	
 	/**
-	* Set Redis namespace (prefix) default: resque
-	* @param string $namespace
-	*/
+	 * Set Redis namespace (prefix) default: resque
+	 * @param string $namespace
+	 */
 	public function prefix($namespace)
 	{
 		if (strpos($namespace, ':') === false) {
@@ -151,13 +151,13 @@ class FakeAsyncResqueRedis //extends Resque_Redis
 	}
 	
 	/**
-	* Magic method to handle all function requests and prefix key based
-	* operations with the {self::$defaultNamespace} key prefix.
-	*
-	* @param string $name The name of the method called.
-	* @param array $args Array of supplied arguments to the method.
-	* @return mixed Return value from Resident::call() based on the command.
-	*/
+	 * Magic method to handle all function requests and prefix key based
+	 * operations with the {self::$defaultNamespace} key prefix.
+	 *
+	 * @param string $name The name of the method called.
+	 * @param array $args Array of supplied arguments to the method.
+	 * @return mixed Return value from Resident::call() based on the command.
+	 */
 	public function __call($name, $args)
 	{
 		$args = func_get_args();
@@ -224,6 +224,7 @@ else
 {
 	die("No APP_INCLUDE defined");
 }
+
 
 $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redis['database'])
 	->then(function (Redis\Client $client) use ($loop, $options) {
@@ -365,17 +366,10 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 						$child->once('exit', function($status) use ($queue, $context, $job) {
 							$queue->workers->cur--;
 							$context->worker->doneWorking();
-						
+							
 							if ($status)
 							{
-							$queue->workers->failed++;
-								/*
-							$job->fail(
-								new Resque_Job_DirtyExitException(
-										'Job exited with status '.$status
-								)
-							);
-								*/
+								$queue->workers->failed++;
 							}
 						});
 						
