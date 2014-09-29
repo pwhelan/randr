@@ -319,8 +319,7 @@ else
 
 
 $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redis['database'])
-	->then(function (Redis\Client $client) use ($loop, $options) {
-		
+	->then(function (Redis\Client $client) use ($loop, $options, $config) {
 		// Setup fake Async redis connection for Resque.
 		// This of course only works with certain calls.
 		$redisresque = new FakeAsyncResqueRedis($client);
@@ -357,6 +356,34 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 				},
 				is_array($options->queues) ? $options->queues : explode(',', $options->queues)
 			)),
+			'cron'		=> array_map(
+				function($job) {
+					return (object)[
+						'queue'	=> $job['queue'],
+						'worker'=> $job['worker'],
+						'jobs'	=> array_map(
+							function($job) {
+								if ($job['when'] == '@minutely')
+								{
+									$job['when'] = '*/1 * * * * *';
+								}
+								return (object)[
+									'when'		=> $job['when'],
+									'cron'		=> Cron\CronExpression::factory($job['when']),
+									'arguments'	=> !isset($job['arguments']) ?
+										[] :
+										(!is_array($job['arguments']) ?
+											[@$job['arguments']] :
+											$job['arguments']
+										)
+								];
+							},
+							$job['jobs']
+						)
+					];
+				},
+				@$config['cron']
+			),
 			'worker'	=> null
 		]);
 		
@@ -488,7 +515,7 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 		// Setup the Timer Queue
 		// TODO: assure that only one instance of the timer executes
 		// at a given time.
-		$loop->addPeriodicTimer(1, function() use ($context, $wp, $loop) {
+		$loop->addPeriodicTimer(5, function() use ($context, $wp, $loop) {
 			
 			$schedq = $context->options->redis['namespace'].':_schdlr_';
 			
@@ -555,6 +582,36 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 			});
 			
 		});
+		
+		// Cron Job Timer
+		$loop->addPeriodicTimer(60, function() use ($context, $wp, $loop) {
+			
+			foreach ($context->cron as $queue)
+			{
+				$due = array_filter(
+					$queue->jobs,
+					function ($job) {
+						return $job->cron->isDue(
+							date("Y-m-d H:i:s", time())
+						);
+					}
+				);
+				
+				foreach ($due as $job)
+				{
+					\Resque::enqueue(
+						$queue->queue,
+						$queue->worker,
+						array_merge(
+							$job->arguments,
+							['time' => time()]
+						)
+					);
+				}
+			}
+			
+		});
+		
 	});
 
 print getmypid()."\n";
