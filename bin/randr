@@ -363,20 +363,28 @@ $redis->createClient('tcp://' . $options->redis['backend'] .'/' . $options->redi
 						'worker'=> $job['worker'],
 						'jobs'	=> array_map(
 							function($job) {
-								if ($job['when'] == '@minutely')
+								
+								try
 								{
-									$job['when'] = '*/1 * * * * *';
+									if ($job['when'] == '@minutely')
+									{
+										$job['when'] = '*/1 * * * * *';
+									}
+									return (object)[
+										'when'		=> $job['when'],
+										'cron'		=> Cron\CronExpression::factory($job['when']),
+										'arguments'	=> !isset($job['arguments']) ?
+											[] :
+											(!is_array($job['arguments']) ?
+												[@$job['arguments']] :
+												$job['arguments']
+											)
+									];
 								}
-								return (object)[
-									'when'		=> $job['when'],
-									'cron'		=> Cron\CronExpression::factory($job['when']),
-									'arguments'	=> !isset($job['arguments']) ?
-										[] :
-										(!is_array($job['arguments']) ?
-											[@$job['arguments']] :
-											$job['arguments']
-										)
-								];
+								catch (Exception $e)
+								{
+									print "ERROR: ".$e->getMessage()."\n";
+								}
 							},
 							$job['jobs']
 						)
