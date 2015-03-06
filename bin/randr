@@ -304,13 +304,21 @@ else
 
 if ($APP_INCLUDE)
 {
-	if (!file_exists(__DIR__.'/../'.$APP_INCLUDE))
+	if ($APP_INCLUDE[0] == '/')
+	{
+		$include = $APP_INCLUDE;
+	}
+	else
+	{
+		$include = __DIR__.'/../'.$APP_INCLUDE;
+	}
+	if (!file_exists($include))
 	{
 		print "Unable to find APP_INCLUDE: {$APP_INCLUDE}\n";
 		exit(1);
 	}
 	
-	include_once __DIR__.'/../'.$APP_INCLUDE;
+	include_once $include;
 }
 else
 {
