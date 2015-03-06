@@ -1,2 +1,9 @@
+# Ignore composer files
+# TODO: check if composer.lock is the way to go...
+composer.lock
 /vendor/
+
+# Backup files
 *~
+*.bak
+DEADJOE
